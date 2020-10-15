@@ -1,9 +1,11 @@
 from mypy.plugin import Plugin, ClassDefContext
 from mypy.nodes import FuncDef, Decorator, OverloadedFuncDef, FakeInfo, ImportFrom
-from mypy.types import NoneType
+from mypy.types import NoneType, UnionType
 from mypy.parse import parse
 from mypy.options import Options
 from typing import List, Type
+
+import copy
 
 def symtrace_class_maker_callback(ctx: ClassDefContext) -> None:
     """
@@ -90,21 +92,31 @@ def forward({', '.join(arg_exprs_real)}){maybe_return_annotation_any}: ...
             real_decorator = def_
             break
 
-    real_args = [arg.type_annotation for arg in real_decorator.func.arguments]
-    proxy_args = [arg.type_annotation for arg in proxy_decorator.func.arguments]
+    # Populate correct argument and return types on the real overload
+    for i in range(1, len(real_decorator.func.type.arg_types)):
+        real_decorator.func.type.arg_types[i] = copy.deepcopy(forward_fn.type.arg_types[i])
+    real_decorator.func.type.ret_type = copy.deepcopy(forward_fn.type.ret_type)
 
-    for k in {'type', 'unanalyzed_type'}:
-        setattr(real_decorator.func, k, getattr(forward_fn, k, None))
 
-    real_decorator.func.arguments = forward_fn.arguments
+    # Now that we've installed the proper `overload` decorators, we need to make
+    # the actual `forward` implementation accept `Proxy`s as well as the real
+    # types.
+    real_types = real_decorator.func.type.arg_types
+    proxy_types = proxy_decorator.func.type.arg_types
+    assert len(real_types) == len(proxy_types)
+    forward_arg_types = forward_fn.type.arg_types
+    # start at 1 to skip self
+    for i in range(1, len(forward_arg_types)):
+        forward_arg_types[i] = UnionType([real_types[i], proxy_types[i]])
+    forward_fn.type.ret_type = UnionType([real_decorator.func.type.ret_type,
+                                          proxy_decorator.func.type.ret_type])
 
-    # TODO: fixup `forward` implementation to take and return the union of
-    # Proxy and the originally-annotated types
-
+    # Create OverloadedFuncDef to wrap the overload decorators and the actual impl
+    # Replace forward_fn in the statement list with that overloaded fn def
     overloaded = OverloadedFuncDef([proxy_decorator, real_decorator, forward_fn])
     stmts[forward_idx] = overloaded
 
-    # Add import for `overload` in class defn
+    # Add import for `overload` in class defn to make sure @overload works
     import_node = ImportFrom('typing', 0, [('overload', None)])
     stmts.insert(0, import_node)
 
