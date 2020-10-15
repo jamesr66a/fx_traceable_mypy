@@ -1,5 +1,4 @@
 import torch
-from typing import overload, Union
 from torch.fx.proxy import Proxy
 
 def traceable(fn):

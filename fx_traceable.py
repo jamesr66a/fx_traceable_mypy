@@ -1,5 +1,5 @@
 from mypy.plugin import Plugin, ClassDefContext
-from mypy.nodes import FuncDef, Decorator, OverloadedFuncDef, FakeInfo
+from mypy.nodes import FuncDef, Decorator, OverloadedFuncDef, FakeInfo, ImportFrom
 from mypy.parse import parse
 from mypy.options import Options
 from typing import List, Type
@@ -98,6 +98,10 @@ def forward({', '.join(arg_exprs_real)}): ...
 
     overloaded = OverloadedFuncDef([proxy_decorator, real_decorator, forward_fn])
     stmts[forward_idx] = overloaded
+
+    # Add import for `overload` in class defn
+    import_node = ImportFrom('typing', 0, [('overload', None)])
+    stmts.insert(0, import_node)
 
     # Defer to get typechecking run on the newly-generated AST
     ctx.api.defer()
