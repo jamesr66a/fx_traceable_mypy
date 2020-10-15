@@ -1,5 +1,6 @@
 from mypy.plugin import Plugin, ClassDefContext
 from mypy.nodes import FuncDef, Decorator, OverloadedFuncDef, FakeInfo, ImportFrom
+from mypy.types import NoneType
 from mypy.parse import parse
 from mypy.options import Options
 from typing import List, Type
@@ -49,21 +50,25 @@ def symtrace_class_maker_callback(ctx: ClassDefContext) -> None:
 
     forward_fn = stmts[forward_idx]
 
-    # TODO: enforce that all parameters and returns (except self) are type
-    # annotated
-    # TODO: return types
+    if forward_fn.type is None:
+        raise RuntimeError('@traceable class requires forward() to be type annotated')
+
     arg_exprs_real = []
     arg_exprs_proxy = []
-    for i, arg in enumerate(forward_fn.arguments):
-        name = arg.variable.name
+    for i, name in enumerate(forward_fn.type.arg_names):
         arg_exprs_real.append(f'{name}')
         type_annotation = ' : torch.fx.proxy.Proxy' if i > 0 else ''
         arg_exprs_proxy.append(f'{name}{type_annotation}')
+    ret_type = forward_fn.type.ret_type
+    maybe_return_annotation_proxy = f' -> torch.fx.proxy.Proxy ' if not isinstance(ret_type, NoneType) else ''
+    # This is just a dummy. This will get wiped out when we replace `type` of the generated "real" overload
+    # later.
+    maybe_return_annotation_any = f' -> Any ' if not isinstance(ret_type, NoneType) else ''
 
     # Create Decorator node for proxy overload
     fn_def_proxy = f"""
 @overload
-def forward({', '.join(arg_exprs_proxy)}): ...
+def forward({', '.join(arg_exprs_proxy)}){maybe_return_annotation_proxy}: ...
 """
 
     parsed_proxy = parse(fn_def_proxy, '<string>', None, None, Options())
@@ -76,7 +81,7 @@ def forward({', '.join(arg_exprs_proxy)}): ...
     # Create dceorator node for normal overload
     fn_def_real = f"""
 @overload
-def forward({', '.join(arg_exprs_real)}): ...
+def forward({', '.join(arg_exprs_real)}){maybe_return_annotation_any}: ...
 """
     parsed_real = parse(fn_def_real, '<string>', None, None, Options())
     real_decorator = None
