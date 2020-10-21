@@ -1,11 +1,14 @@
 from mypy.plugin import Plugin, ClassDefContext
-from mypy.nodes import FuncDef, Decorator, OverloadedFuncDef, FakeInfo, ImportFrom, ClassDef, TypeInfo, SymbolTable
+from mypy.nodes import FuncDef, Decorator, OverloadedFuncDef, FakeInfo, ImportFrom, ClassDef, TypeInfo, SymbolTable,\
+                       FuncBase, SymbolTableNode, MDEF
 from mypy.types import NoneType, UnionType, Instance
 from mypy.parse import parse
 from mypy.options import Options
-from typing import List, Type
+from typing import List, Type, Optional
 
 import copy
+import inspect
+import torch
 
 proxy_defn = '''
 class Proxy:
@@ -17,7 +20,20 @@ parsed_proxy_class_def : ClassDef = parse(proxy_defn, '<string>', 'torch.fx.prox
 # having `fullname` defined causes downstream errors when formatting the type
 # string
 parsed_proxy_class_def.fullname = 'torch.fx.proxy.Proxy'
-proxy_type_info = TypeInfo(SymbolTable(), parsed_proxy_class_def, 'torch.fx.proxy')
+class ProxyTypeInfo(TypeInfo):
+    def get_method(self, name: str) -> 'Optional[FuncBase]':
+#         if hasattr(torch.Tensor, name):
+#             fake_method_src = f"""
+# class Proxy:
+#     def {name}(self, *args, **kwargs):
+#         pass
+# """
+#             parsed_fake_method_def = parse(fake_method_src, '<string>', None, None, Options()).defs[0].defs.body[0]
+#             return parsed_fake_method_def
+
+        return super().get(name)
+
+proxy_type_info = ProxyTypeInfo(SymbolTable(), parsed_proxy_class_def, 'torch.fx.proxy')
 proxy_type_instance = Instance(proxy_type_info, [])
 
 def symtrace_class_maker_callback(ctx: ClassDefContext) -> None:
