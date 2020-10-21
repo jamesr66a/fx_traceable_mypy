@@ -1,11 +1,24 @@
 from mypy.plugin import Plugin, ClassDefContext
-from mypy.nodes import FuncDef, Decorator, OverloadedFuncDef, FakeInfo, ImportFrom
-from mypy.types import NoneType, UnionType
+from mypy.nodes import FuncDef, Decorator, OverloadedFuncDef, FakeInfo, ImportFrom, ClassDef, TypeInfo, SymbolTable
+from mypy.types import NoneType, UnionType, Instance
 from mypy.parse import parse
 from mypy.options import Options
 from typing import List, Type
 
 import copy
+
+proxy_defn = '''
+class Proxy:
+    pass
+'''
+
+parsed_proxy_class_def : ClassDef = parse(proxy_defn, '<string>', 'torch.fx.proxy', None, Options()).defs[0]
+# I don't know if parse() is supposed to be setting this automatically, but not
+# having `fullname` defined causes downstream errors when formatting the type
+# string
+parsed_proxy_class_def.fullname = 'torch.fx.proxy.Proxy'
+proxy_type_info = TypeInfo(SymbolTable(), parsed_proxy_class_def, 'torch.fx.proxy')
+proxy_type_instance = Instance(proxy_type_info, [])
 
 def symtrace_class_maker_callback(ctx: ClassDefContext) -> None:
     """
@@ -29,6 +42,8 @@ def symtrace_class_maker_callback(ctx: ClassDefContext) -> None:
 
     @traceable
     class Foo(torch.nn.Module):
+        from typing import overload
+
         @overload
         def forward(self, x : torch.fx.proxy.Proxy) -> torch.fx.proxy.Proxy: ...
 
@@ -80,6 +95,12 @@ def forward({', '.join(arg_exprs_proxy)}){maybe_return_annotation_proxy}: ...
             proxy_decorator = def_
             break
 
+    # Populate correct argument and return types on the proxy overload
+    # Make sure this points to the `Instance` we defined at initialization
+    for i in range(1, len(proxy_decorator.func.type.arg_types)):
+        proxy_decorator.func.type.arg_types[i] = proxy_type_instance
+    proxy_decorator.func.type.ret_type = proxy_type_instance
+
     # Create dceorator node for normal overload
     fn_def_real = f"""
 @overload
@@ -96,7 +117,6 @@ def forward({', '.join(arg_exprs_real)}){maybe_return_annotation_any}: ...
     for i in range(1, len(real_decorator.func.type.arg_types)):
         real_decorator.func.type.arg_types[i] = copy.deepcopy(forward_fn.type.arg_types[i])
     real_decorator.func.type.ret_type = copy.deepcopy(forward_fn.type.ret_type)
-
 
     # Now that we've installed the proper `overload` decorators, we need to make
     # the actual `forward` implementation accept `Proxy`s as well as the real
@@ -123,10 +143,16 @@ def forward({', '.join(arg_exprs_real)}){maybe_return_annotation_any}: ...
     # Defer to get typechecking run on the newly-generated AST
     ctx.api.defer()
 
+
 class SymTracePlugin(Plugin):
     def get_class_decorator_hook(self, fullname: str):
         if fullname == 'test.traceable':
             return symtrace_class_maker_callback
+        return None
+
+    def get_type_analyze_hook(self, fullname : str):
+        if fullname == 'torch.fx.proxy.Proxy':
+            return lambda ctx: proxy_type_instance
         return None
 
 def plugin(version: str):
